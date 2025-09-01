@@ -1,114 +1,61 @@
 # godot_zeromq
 
-ZeroMQ addon for Godot 4.2.2 - 4.4
+ZeroMQ addon for Godot 4.4.
+
+This is a fork of the `godot_zeromq` addon by [Fumiya Funatsu](https://github.com/funatsufumiya/godot_zeromq), 
+adjusted to feel more like an integrated Godot component by using properties and 
+signals instead of static functions. 
+
+I don't provide a binary version yet, if you want this please ask in an issue.
+You can compile this yourself though, or use the upstream fork instead, which has
+[binary builds](https://github.com/funatsufumiya/godot_zeromq_bin) available.
 
 ## Install
 
-use [godot_zeromq_bin](https://github.com/funatsufumiya/godot_zeromq_bin). see [instruction](https://github.com/funatsufumiya/godot_zeromq_bin/blob/main/README.md)
+Build the addon with `scons platform=linux` (or your desired platform), then
+copy the `project/addons/zeromq/` to your project's addons directory.
+
+Enable "ZeroMQ" in the project addons settings.
+
+## Debug
+
+For a debug build, use `scons target=template_debug debug_symbols=yes platform=...`. Now you can start 
+godot or your exported project with a debugger and step into the library.
 
 ## Usage
 
+Add a `ZMQSocket` node and configure its properties. Call `socket_node.start()`
+from your script, or enable autostart to connect the socket when the scene is loaded.
+
+You can connect to the `message_received` signal to process messages. The
+signal argument is an array of [`PackedByteArray`](https://docs.godotengine.org/en/stable/classes/class_packedbytearray.html)
+which are the frames of the ZMQ multipart message.
+
 ```gdscript
-@onready var zmq_receiver = ZMQReceiver.new_from("tcp://localhost:5555", ZMQ.SocketType.PULL, ZMQ.ConnectionMode.CONNECT, "")
-@onready var zmq_sender = ZMQSender.new_from("tcp://localhost:5555", ZMQ.SocketType.PUSH, ZMQ.ConnectionMode.BIND, "", false)
+@onready var socket = $"../ZMQSocket"
 
 func _ready():
-    add_child(zmq_receiver)
-    add_child(zmq_sender)
+    socket.message_received.connect(on_message_received)
 
-    zmq_receiver.onMessageString(func(str: String):
-        print("[ZMQ Receiver] Received: ", str)
-    )
-
-    while true:
-        await get_tree().create_timer(1.0).timeout
-        print("[ZMQ Sender] Sending: ", "Hello World")
-        zmq_sender.sendString("Hello World")
-
-func _exit_tree():
-    zmq_receiver.stop()
-    zmq_sender.stop()
-
-    remove_child(zmq_receiver)
-    remove_child(zmq_sender)
+func on_message_received(frames: Array[PackedByteArray]):
+    print(frames)
 ```
 
-more example, see [GDScript of demo project](https://github.com/funatsufumiya/godot_zeromq/blob/main/project/zeromq_receiver.gd)
-
-### ZMQReceiver
-
-- `new_from(address: String, socket_type: int, connection_mode: int, socket_filter: String) -> ZMQReceiver`
-- `onMessageString(callback: Callable[[String], void])`
-- `onMessageBytes(callback: Callable[[PackedByteArray], void])`
-- `sendString(message: String) -> void`
-- `sendBytes(message: PackedByteArray) -> void`
-- `stop() -> void`
-
-### ZMQSender
-
-- `new_from(address: String, socket_type: int, connection_mode: int, socket_filter: String, auto_receive_on_sender: bool) -> ZMQSender`
-- `onMessageString(callback: Callable[[String], void])` (***ONLY enabled to use when auto_receive_on_sender is true, or `beginReceiveRequest()` called***)
-- `onMessageBytes(callback: Callable[[PackedByteArray], void])` (***ONLY enabled to use when auto_receive_on_sender is true, or `beginReceiveRequest()` called***)
-- `sendString(message: String) -> void`
-- `sendBytes(message: PackedByteArray) -> void`
-- `beginReceiveRequest() -> void` (***ONLY enabled to use when auto_receive_on_sender is false***)
-- `stop() -> void`
-
-### NOTES of ZMQReceiver and ZMQSender
-
-- `socket_filter` is ONLY used when `socket_type` is `SUB`
-- `onMessageString` and `onMessageBytes` are exclusive, you can ONLY use one of them
-
-### ZMQ
+To send something on the socket, build a multipart message of
+`PackedByteArray`s and call `send_message`:
 
 ```gdscript
-enum SocketType {
-    PUB = 1,
-    SUB = 2,
-    REQ = 3,
-    REP = 4,
-    DEALER = 5,
-    ROUTER = 6,
-    PULL = 7,
-    PUSH = 8,
-    XPUB = 9,
-    XSUB = 10,
-    STREAM = 11
-}
-
-enum ConnectionMode {
-    BIND = 1,
-    CONNECT = 2
-}
+func send_something():
+    var bytes: PackedByteArray = [13, 37]
+    socket.send_message([bytes])
 ```
 
-## Features
+For a REQ socket, it makes sense to use the `await <signal>` mechanism of GDScript:
 
-- SUB/PUB, PUSH/PULL, REQ/REP (tested)
-- untested but enabled: DEALER/ROUTER, PAIR/PAIR, XPUB/XSUB, STREAM
-
-## Example Project
-
-see [`project/`](project) directory
-
-## Build and Run
-
-(This process is needed only if you build this plugin by your own)
-
-- NOTE: before scons, you need to install **cppzmq** and **ZeroMQ**. 
-  - on Ubuntu/Mac: `brew install cppzmq` (installed dependency will auto detected from `/home/linuxbrew/.linuxbrew/`, and you can also use vcpkg if you want, path should be `~/vcpkg/`)
-  - on Windows: `./vcpkg install cppzmq` (installed dependency will auto detected from `C:/vcpkg/`)
-
-```bash
-$ git submodule update --init --recursive --recommend-shallow --depth 1
-$ scons
-$ scons target=template_release
-$ godot project/project.godot # (only first time)
-$ godot --path project/ # run demo
+```gdscript
+socket.send_message(request_frames)
+response_frames = await socket.message_received
 ```
 
-## License
-
-- godot_zeromq: [MIT License](./LICENSE)
-- [cppzmq](https://github.com/zeromq/cppzmq): [MIT License](https://github.com/zeromq/cppzmq/blob/master/LICENSE)
-- [libzmq](https://github.com/zeromq/libzmq): [Mozilla Public License 2.0](https://github.com/zeromq/libzmq/blob/master/LICENSE) (please also check [https://zeromq.org/license/](https://zeromq.org/license/))
+Make sure not to overlap message pairs in REQ/RES modes. Usually, DEALER/ROUTER
+or PUB/SUB are better in those cases.

@@ -16,7 +16,7 @@ using namespace godot;
 void ZMQSocket::_bind_methods() {
     ClassDB::bind_method(D_METHOD("start"), &ZMQSocket::start);
     ClassDB::bind_method(D_METHOD("stop"), &ZMQSocket::stop);
-    ClassDB::bind_method(D_METHOD("send_message", "message"), &ZMQSocket::send_message);
+    ClassDB::bind_method(D_METHOD("send_message", "frames"), &ZMQSocket::send_message);
 
     ClassDB::bind_method(D_METHOD("get_address"), &ZMQSocket::get_address);
     ClassDB::bind_method(D_METHOD("set_address", "address"), &ZMQSocket::set_address);
@@ -132,7 +132,24 @@ void ZMQSocket::_print_error(String where) {
         what = "unknown";
     }
 
+    std::cout << "ZMQ error in " << where.utf8().get_data() << ": " << what.utf8().get_data() << std::endl;
     UtilityFunctions::push_error(String("ZMQ Error in ") + where + String(": ") + what);
+}
+
+void ZMQSocket::_close_socket() {
+    if (_socket != nullptr) {
+        if (zmq_close(_socket) != 0) {
+            _print_error("zmq_close");
+        }
+        _socket = nullptr;
+    }
+
+    if (_context != nullptr) {
+        if (zmq_ctx_term(_context) != 0) {
+            _print_error("zmq_ctx_term");
+        }
+        _context = nullptr;
+    }
 }
 
 void ZMQSocket::start() {
@@ -170,20 +187,14 @@ void ZMQSocket::start() {
     case ZMQ_CONNECTION_MODE_BIND:
         if (zmq_bind(_socket, _address.utf8().get_data()) != 0) {
             _print_error("zmq_bind");
-            zmq_close(_socket);
-            _socket = nullptr;
-            zmq_ctx_destroy(_context);
-            _context = nullptr;
+            _close_socket();
             return;
         }
         break;
     case ZMQ_CONNECTION_MODE_CONNECT:
         if (zmq_connect(_socket, _address.utf8().get_data()) != 0) {
             _print_error("zmq_connect");
-            zmq_close(_socket);
-            _socket = nullptr;
-            zmq_ctx_destroy(_context);
-            _context = nullptr;
+            _close_socket();
             return;
         }
         break;
@@ -202,33 +213,41 @@ void ZMQSocket::start() {
         PRINT(sub_filter.get_data());
     }
 
-    _is_running = true;
+    if (_socket_type != ZMQ_SOCKET_TYPE_REQ) {
+        _should_receive = true;
+    }
 }
 
 bool ZMQSocket::stop() {
-    if (_is_running) {
-        if (zmq_close(_socket) != 0) {
-            _print_error("zmq_close");
-        }
-        _socket = nullptr;
-
-        if (zmq_ctx_term(_context) != 0) {
-            _print_error("zmq_ctx_term");
-        }
-        _context = nullptr;
-
-        _is_running = false;
+    if (_socket != nullptr) {
+        _close_socket();
+        _should_receive = false;
         return true;
     }
     return false;
 }
 
-void ZMQSocket::send_message(PackedByteArray message) {
-    PRINT("Send message");
-    // TODO: use zmq_msg_send?
-    if (zmq_send(_socket, message.ptr(), message.size(), 0) < 0) {
-        _print_error("zmq_send");
+void ZMQSocket::send_message(TypedArray<PackedByteArray> frames) {
+    if (_should_receive && (_socket_type == ZMQ_SOCKET_TYPE_REQ || _socket_type == ZMQ_SOCKET_TYPE_REP)) {
+        UtilityFunctions::push_error(
+            "Socket cannot send a message now, as it is waiting for a message from peer (this is REQ-REP behaviour)."
+        );
         return;
+    }
+
+    int n = frames.size();
+    for (int i = 0; i < n; i++) {
+        const PackedByteArray &message = frames[i];
+
+        if (zmq_send(_socket, message.ptr(), message.size(), i < n - 1 ? ZMQ_SNDMORE : 0) < 0) {
+            _print_error("zmq_send");
+            return;
+        }
+    }
+
+    // In single-recv modes (REQ, REP), we now want to find a new message.
+    if (_socket_type == ZMQ_SOCKET_TYPE_REQ || _socket_type == ZMQ_SOCKET_TYPE_REP) {
+        _should_receive = true;
     }
 }
 
@@ -267,7 +286,7 @@ String ZMQSocket::get_sub_filter() const { return _sub_filter; }
 void ZMQSocket::set_sub_filter(String sub_filter) {
     _sub_filter = sub_filter;
 
-    if (_is_running) {
+    if (_socket != nullptr) {
         // Change the filter
         auto utf8 = _sub_filter.utf8();
         if (zmq_setsockopt(_socket, ZMQ_SUBSCRIBE, utf8, utf8.length()) != 0) {
@@ -284,9 +303,19 @@ void ZMQSocket::_ready() {
 }
 
 void ZMQSocket::_process(double delta) {
-    if (_is_running && !Engine::get_singleton()->is_editor_hint()) {
-        while (_recv_single())
-            ;
+    if (_socket != nullptr && !Engine::get_singleton()->is_editor_hint()) {
+        while (_should_receive) {
+            if (!_recv_single()) {
+                // We did not get a message, retry next process_frame.
+                break;
+            }
+
+            // We got a message. If we're in a single-recv mode (REQ, REP), stop
+            // receiving until we send the next message.
+            if (_socket_type == ZMQ_SOCKET_TYPE_REQ || _socket_type == ZMQ_SOCKET_TYPE_REP) {
+                _should_receive = false;
+            }
+        }
     }
 }
 

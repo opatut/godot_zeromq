@@ -37,7 +37,7 @@ class ZMQSocket : public Node {
     // Public methods to be called by consumer or automatically on property change
     void start();
     bool stop();
-    void send_message(PackedByteArray message);
+    void send_message(TypedArray<PackedByteArray> frames);
 
     // Property access methods
     String get_address() const;
@@ -60,11 +60,10 @@ class ZMQSocket : public Node {
 
   private:
     void _print_error(String where);
+    void _close_socket();
 
-    Thread *_thread = nullptr;
-    Mutex *_mutex = nullptr;
-    void *_context;
-    void *_socket;
+    void *_context = nullptr;
+    void *_socket = nullptr;
 
     // Proprties
     String _address;
@@ -73,7 +72,8 @@ class ZMQSocket : public Node {
     bool _autostart;
     String _sub_filter;
 
-    bool _is_running = false;
+    // Set to true when the process loop should try to receive messages.
+    bool _should_receive = false;
 };
 
 } // namespace godot
